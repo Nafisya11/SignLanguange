@@ -93,7 +93,7 @@ class MenuPage extends StatelessWidget {
                   onPressed: () {
                     Navigator.push(
                       context,
-                      MaterialPageRoute(builder: (_) => const CameraPage()),
+                      MaterialPageRoute(builder: (_) => CameraPage()),
                     );
                   },
                 ),

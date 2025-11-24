@@ -12,16 +12,14 @@ dependencies:
     sdk: flutter
 
   cupertino_icons: ^1.0.8
-  camera: ^0.10.5+5
+
+  # --- UBAH INI ---
+  camera: ^0.11.3   # Ganti dari 0.10.5 ke 0.11.3 agar cocok dengan flutter_vision 2.0.0
 
   # --- Tambahan ---
-  tflite_flutter: ^0.10.4   # biarkan saja, nanti override memaksa versi lain
+  flutter_vision: ^2.0.0
   permission_handler: ^11.3.0
   image: ^3.3.0
-  # ----------------
-
-dependency_overrides:
-  tflite_flutter: 0.9.5
 
 dev_dependencies:
   flutter_test:
@@ -36,4 +34,6 @@ flutter:
     - assets/alphabet/
     - assets/number/
     - assets/logo/
-    - assets/model/
+    # Ubah baris ini agar lebih spesifik:
+    - assets/model/my_model.tflite
+    - assets/model/labels.txt  # Jangan lupa labels jika ada
