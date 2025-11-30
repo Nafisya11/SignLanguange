@@ -45,14 +45,26 @@ class _CameraPageState extends State<CameraPage> {
 
     try {
       // Try GPU first, fallback to CPU
+      try {
         await vision.loadYoloModel(
           labels: 'assets/model/labels.txt',
           modelPath: 'assets/model/my_model.tflite',
           modelVersion: "yolov8",
-          quantization: true,
+          quantization: false,
+          numThreads: 2,
+          useGpu: true,
+        );
+      } catch (gpuError) {
+        await vision.loadYoloModel(
+          labels: 'assets/model/labels.txt',
+          modelPath: 'assets/model/my_model.tflite',
+          modelVersion: "yolov8",
+          quantization: false,
           numThreads: 2,
           useGpu: false,
         );
+      }
+      
       isModelLoaded = true;
     } catch (e) {
       if (mounted) {
@@ -111,17 +123,25 @@ class _CameraPageState extends State<CameraPage> {
           classThreshold: 0.4,
         );
 
+        // Debug logging
+        print("📐 Image: ${image.width}x${image.height}");
+        print("📊 Results: ${result.length} detections");
+
         if (result.isNotEmpty && mounted) {
           final topResult = result.first;
           final gesture = topResult['tag'] as String;
           final confidence = topResult['box'][4] as double;
+          
+          // Debug: Print detected info
+          print("✅ Detected: $gesture - ${(confidence * 100).toStringAsFixed(1)}%");
+          print("📍 Box: ${topResult['box']}");
           
           final now = DateTime.now();
           final shouldSave = lastSavedGesture != gesture ||
               lastSaveTime == null ||
               now.difference(lastSaveTime!).inSeconds >= 3;
           
-          if (shouldSave && confidence > 0.4) {
+          if (shouldSave && confidence > 0.3) {
             HistoryService.saveDetection(gesture, confidence);
             lastSavedGesture = gesture;
             lastSaveTime = now;
@@ -129,6 +149,11 @@ class _CameraPageState extends State<CameraPage> {
 
           setState(() {
             yoloResults = result;
+          });
+        } else if (mounted) {
+          // Clear old results when nothing detected
+          setState(() {
+            yoloResults = [];
           });
         }
       } catch (e) {
@@ -194,9 +219,22 @@ class _CameraPageState extends State<CameraPage> {
       );
     }
 
-    return Scaffold(
-      backgroundColor: Colors.black,
-      body: Stack(
+    return WillPopScope(
+      onWillPop: () async {
+        // Cleanup before navigating back
+        if (_isStreaming && controller.value.isInitialized) {
+          try {
+            await controller.stopImageStream();
+            _isStreaming = false;
+          } catch (e) {
+            // Ignore error during cleanup
+          }
+        }
+        return true; // Allow navigation
+      },
+      child: Scaffold(
+        backgroundColor: Colors.black,
+        body: Stack(
         children: [
           // LAYER 1: KAMERA (Dibuat Center agar tidak ditarik paksa)
           Center(
@@ -204,26 +242,19 @@ class _CameraPageState extends State<CameraPage> {
           ),
 
           // LAYER 2: KOTAK DETEKSI
-          // Kita bungkus dengan LayoutBuilder agar koordinatnya pas dengan ukuran kamera visual
           LayoutBuilder(
             builder: (context, constraints) {
-              // Pastikan kita menggambar kotak HANYA di area kamera, bukan seluruh layar
-              // Ukuran preview kamera di layar:
-              final Size cameraSize = controller.value.previewSize!;
-
-              // Hitung skala agar bounding box pas dengan tampilan di layar
-              // Karena dirotasi, width controller jadi height layar
-              double scaleX = constraints.maxWidth / cameraSize.height;
-              double scaleY = constraints.maxHeight / cameraSize.width;
-
-              // Jika kamera ditaruh di Center, kita butuh offset jika ada sisa layar hitam
-              // Tapi untuk simplifikasi, kita anggap full width.
-
+              if (cameraImage == null) return Stack(children: []);
+              
+              // Gunakan dimensi ASLI dari CameraImage
+              final double imageWidth = cameraImage!.width.toDouble();
+              final double imageHeight = cameraImage!.height.toDouble();
+              
               return Stack(
                 children: displayBoxesAroundRecognizedObjects(
-                    Size(constraints.maxWidth, constraints.maxHeight),
-                    cameraSize.height,
-                    cameraSize.width
+                  Size(constraints.maxWidth, constraints.maxHeight),
+                  imageHeight,
+                  imageWidth
                 ),
               );
             },
@@ -249,7 +280,36 @@ class _CameraPageState extends State<CameraPage> {
               tooltip: 'Lihat Riwayat',
             ),
           ),
+
+          // LAYER 5: STATUS INDICATOR
+          Positioned(
+            bottom: 40,
+            left: 0,
+            right: 0,
+            child: Center(
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                decoration: BoxDecoration(
+                  color: yoloResults.isEmpty 
+                    ? Colors.orange.withOpacity(0.8)
+                    : Colors.green.withOpacity(0.8),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Text(
+                  yoloResults.isEmpty 
+                    ? "🔍 Mencari gesture..." 
+                    : "✅ ${yoloResults.length} gesture terdeteksi",
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 14,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+            ),
+          ),
         ],
+        ),
       ),
     );
   }
@@ -258,8 +318,9 @@ class _CameraPageState extends State<CameraPage> {
   List<Widget> displayBoxesAroundRecognizedObjects(Size screen, double imgH, double imgW) {
     if (yoloResults.isEmpty || cameraImage == null) return [];
 
-    double factorX = screen.width / imgH;
-    double factorY = screen.height / imgW;
+    // Fix: Gunakan koordinat yang benar dengan handle rotasi
+    double factorX = screen.width / imgW;
+    double factorY = screen.height / imgH;
 
     return yoloResults.map((result) {
       double x1 = result["box"][0];
@@ -267,11 +328,11 @@ class _CameraPageState extends State<CameraPage> {
       double x2 = result["box"][2];
       double y2 = result["box"][3];
 
-      // Clamp coordinates to prevent drawing outside screen
-      double left = (x1 * factorX).clamp(0.0, screen.width - 10);
-      double top = (y1 * factorY).clamp(0.0, screen.height - 10);
-      double width = ((x2 - x1) * factorX).clamp(10.0, screen.width - left);
-      double height = ((y2 - y1) * factorY).clamp(10.0, screen.height - top);
+      // Konversi koordinat dengan faktor yang benar
+      double left = (x1 * factorX).clamp(0.0, screen.width - 50);
+      double top = (y1 * factorY).clamp(0.0, screen.height - 50);
+      double width = ((x2 - x1) * factorX).clamp(50.0, screen.width - left);
+      double height = ((y2 - y1) * factorY).clamp(50.0, screen.height - top);
 
       final confidence = (result['box'][4] * 100).toStringAsFixed(0);
 
@@ -310,7 +371,7 @@ class _CameraPageState extends State<CameraPage> {
                     "${result['tag']} $confidence%",
                     style: const TextStyle(
                       color: Colors.black,
-                      fontSize: 14.0,
+                      fontSize: 16.0,
                       fontWeight: FontWeight.bold,
                     ),
                   ),
@@ -325,20 +386,35 @@ class _CameraPageState extends State<CameraPage> {
 
   @override
   void dispose() {
-    // Stop image stream before disposing
-    if (_isStreaming && controller.value.isInitialized && controller.value.isStreamingImages) {
-      controller.stopImageStream();
+    try {
+      // Stop image stream with proper checks
+      if (_isStreaming && 
+          controller.value.isInitialized && 
+          controller.value.isStreamingImages) {
+        controller.stopImageStream();
+      }
+    } catch (e) {
+      print("Error stopping image stream: $e");
     }
+    
     _isStreaming = false;
     
-    // Dispose camera controller
-    if (controller.value.isInitialized) {
-      controller.dispose();
+    try {
+      // Dispose camera controller
+      if (controller.value.isInitialized) {
+        controller.dispose();
+      }
+    } catch (e) {
+      print("Error disposing controller: $e");
     }
     
-    // Close YOLO model
-    if (isModelLoaded) {
-      vision.closeYoloModel();
+    try {
+      // Close YOLO model
+      if (isModelLoaded) {
+        vision.closeYoloModel();
+      }
+    } catch (e) {
+      print("Error closing YOLO model: $e");
     }
     
     super.dispose();
